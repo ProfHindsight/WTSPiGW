@@ -21,7 +21,7 @@ TMRh20 2014
 #include <RF24/RF24.h>
 #include <unistd.h>
 #include <fstream>
-#include <time>
+#include <time.h>
 
 using namespace std;
 
@@ -70,7 +70,7 @@ struct node_info_packet
 	uint8_t hardware_revision[2];
 };
 
-struct node_data_packet
+typedef struct node_data_packet
 {
 	uint8_t packet_type;
 	uint8_t node_id;
@@ -78,7 +78,7 @@ struct node_data_packet
 	int32_t BMP280_temp;
 	uint32_t Si7020_humid;
 	int32_t Si7020_temp;
-};
+} node_data_struct_t, *p_node_data_struct_t;
 
 struct gateway_ack_packet
 {
@@ -92,7 +92,7 @@ struct all_packets
 	discover_packet discover;	
 	provision_packet provision;
 	node_info_packet node_info;
-	node_data_packet node_data;
+	p_node_data_struct_t node_data;
 	gateway_ack_packet ack;
 };
 
@@ -232,19 +232,19 @@ void post_node_data(void)
 {
 	string temp_string = DATA_WORKING_DIRECTORY;
 	temp_string += "/node" ;
-	temp_string += to_string(temp_packets.node_data.node_id); 
-	temp_string += "/data/";
+	temp_string += to_string(temp_packets.node_data->node_id); 
+	temp_string += "/data";
 	ofstream output_file(temp_string.c_str());
-	get_node_info(temp_packets.node_data.node_id);
+	get_node_info(temp_packets.node_data->node_id);
 	if(temp_packets.node_info.bmp280_available)
 	{
-		output_file << "BMP280 Temp: " << temp_packets.node_data.BMP280_temp << endl;
-		output_file << "BMP280 Pres: " << temp_packets.node_data.BMP280_pres << endl;
+		output_file << "BMP280 Temp: " << temp_packets.node_data->BMP280_temp << endl;
+		output_file << "BMP280 Pres: " << temp_packets.node_data->BMP280_pres << endl;
 	}
 	if(temp_packets.node_info.si7020_available)
 	{
-		output_file << "Si7020 Temp: " << temp_packets.node_data.Si7020_temp << endl;
-		output_file << "Si7020 Humi: " << temp_packets.node_data.Si7020_humid << endl;
+		output_file << "Si7020 Temp: " << temp_packets.node_data->Si7020_temp << endl;
+		output_file << "Si7020 Humi: " << temp_packets.node_data->Si7020_humid << endl;
 	}
 	output_file.close();
 }
@@ -274,7 +274,6 @@ int main(int argc, char** argv)
 	temp_packets.ack.packet_type = gateway_ack_packet_type;
 	temp_packets.provision.packet_type = provision_packet_type;
 	temp_packets.node_info.packet_type = node_info_packet_type;
-	temp_packets.node_data.packet_type = node_data_packet_type;
 	temp_packets.discover.packet_type = discover_packet_type;
 
 	for(uint i = 0; i < SUPPORTED_NUM_NODES; i++)
@@ -305,6 +304,7 @@ int main(int argc, char** argv)
 	bool pass = true;
 	uint64_t tempMillis;
 	uint8_t next_node_id = 0;
+	uint32_t temp_address;
     // forever loop
 	while (1)
 	{
@@ -387,12 +387,11 @@ int main(int argc, char** argv)
 
 					radio.stopListening();
 					radio.write(&temp_packets.provision, provision_packet_size);
-					radio.openWritingPipe(1, temp_packets.provision.address);
 					radio.startListening();
 					node_next_millis[next_node_id] = temp_packets.provision.mswait;
 
 					tempMillis = millis();
-					while((millis() - tempMillis) < 10000)
+					while((millis() - tempMillis) < 1000)
 					{
 						if(radio.available())
 						{
@@ -401,7 +400,7 @@ int main(int argc, char** argv)
 						}
 					}
 
-					if((millis() - tempMillis) >= 10000)
+					if((millis() - tempMillis) >= 1000)
 					{
 						cout << "Didn't get the node info stuff" << endl;
 						break;
@@ -412,7 +411,7 @@ int main(int argc, char** argv)
 					update_wait_time();
 				break;
 
-				// These two packets are only sent by the gateway, so we shouldn't see them unless there's another gateway.
+				// These two packets are only sent by the gateway, so we shouldn't see them 
 				case provision_packet_type:
 					cout << "Provision packet type detected" << endl;
 				break;
@@ -424,6 +423,20 @@ int main(int argc, char** argv)
 				// Allow them to reset by ignoring them.
 				case node_data_packet_type:
 					cout << "Data packet type detected" << endl;
+					uint8_t temp_array[node_data_packet_size];
+					temp_packets.node_data = (p_node_data_struct_t) temp_array;
+					temp_address = addresses[temp_packets.node_data->node_id % sizeof(addresses)/sizeof(addresses[0])];
+					post_node_data();
+					delay(10);
+					radio.stopListening();
+					radio.openWritingPipe(temp_address);
+					cout << "Writing address: " << to_string(temp_address) << endl;
+					temp_packets.ack.node_id = temp_packets.node_data->node_id;
+					temp_packets.ack.mswait = calculateWaitTime(temp_packets.ack.node_id);
+					radio.write(&temp_packets.ack, gateway_ack_packet_size);
+					radio.openWritingPipe(default_node_address);
+					radio.startListening();
+					cout << "I think I posted the data" << endl;
 				break;
 				case node_info_packet_type:
 					cout << "Info packet type detected" << endl;
@@ -432,9 +445,6 @@ int main(int argc, char** argv)
 				cout << "Packet type: " << packet[0]  << "\n";
 				break;
 			}
-			radio.stopListening();
-			radio.openReadingPipe(1, default_node_address);
-			radio.startListening();
 		}
 	} // loop
 
