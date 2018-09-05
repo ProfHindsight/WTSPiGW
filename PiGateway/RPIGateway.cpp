@@ -381,13 +381,13 @@ int main(int argc, char** argv)
 					temp_packets.provision.node_id = next_node_id;
 					temp_packets.provision.address = addresses[next_node_id % sizeof(addresses)/sizeof(addresses[0])];
 					temp_packets.provision.mswait = calculateWaitTime(next_node_id);
-					cout << "Node ID: " << temp_packets.provision.node_id << endl;
-					cout << "address: " << temp_packets.provision.address << endl;
-					cout << "mswait: " << temp_packets.provision.mswait << endl;
+					cout << "Node ID: " << to_string(temp_packets.provision.node_id) << endl;
+					cout << "address: " << to_string(temp_packets.provision.address) << endl;
+					cout << "mswait: " << to_string(temp_packets.provision.mswait) << endl;
 
 					radio.stopListening();
 					radio.write(&temp_packets.provision, provision_packet_size);
-					radio.openReadingPipe(1, temp_packets.provision.address);
+					radio.openWritingPipe(1, temp_packets.provision.address);
 					radio.startListening();
 					node_next_millis[next_node_id] = temp_packets.provision.mswait;
 
