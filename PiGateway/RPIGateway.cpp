@@ -1,15 +1,7 @@
 /*
-TMRh20 2014
-
  This program is free software; you can redistribute it and/or
  modify it under the terms of the GNU General Public License
  version 2 as published by the Free Software Foundation.
- */
-
-/** General Data Transfer Rate Test
- * This example demonstrates basic data transfer functionality with the
- updated library. This example will display the transfer rates acheived using
- the slower form of high-speed transfer using blocking-writes.
  */
 
 
@@ -27,12 +19,12 @@ using namespace std;
 
 #define DATA_WORKING_DIRECTORY 	"/home/pi/node_data"
 
-#define MS_WAIT_BETWEEN_PACKETS 60000
+#define MS_WAIT_BETWEEN_PACKETS 6000
 #define SUPPORTED_NUM_NODES		64
 
-#define discover_packet_size	16
+#define discover_packet_size	32
 #define provision_packet_size   14
-#define node_info_packet_size   5
+#define node_info_packet_size   14
 #define node_data_packet_size   18
 #define gateway_ack_packet_size 6
 
@@ -50,7 +42,7 @@ enum packet_types
 struct discover_packet
 {
 	uint8_t packet_type;
-	char message[15];
+	char message[31];
 };
 
 struct provision_packet
@@ -68,6 +60,8 @@ struct node_info_packet
 	uint8_t bmp280_available;
 	uint8_t si7020_available;
 	uint8_t hardware_revision[2];
+	uint32_t unique_id_0;
+	uint32_t unique_id_1;
 };
 
 typedef struct node_data_packet
@@ -97,50 +91,11 @@ struct all_packets
 };
 
 all_packets temp_packets;
-//
-// Hardware configuration
-//
 
-/****************** Raspberry Pi ***********************/
-
-// Radio CE Pin, CSN Pin, SPI Speed
-// See http://www.airspayce.com/mikem/bcm2835/group__constants.html#ga63c029bd6500167152db4e57736d0939 and the related enumerations for pin information.
-
-// Setup for GPIO 22 CE and CE0 CSN with SPI Speed @ 4Mhz
-//RF24 radio(RPI_V2_GPIO_P1_22, BCM2835_SPI_CS0, BCM2835_SPI_SPEED_4MHZ);
-
-// NEW: Setup for RPi B+
-//RF24 radio(RPI_BPLUS_GPIO_J8_15,RPI_BPLUS_GPIO_J8_24, BCM2835_SPI_SPEED_8MHZ);
-
-// Setup for GPIO 15 CE and CE0 CSN with SPI Speed @ 8Mhz
-//RF24 radio(RPI_V2_GPIO_P1_15, RPI_V2_GPIO_P1_24, BCM2835_SPI_SPEED_8MHZ);
-
-/*** RPi Alternate ***/
-//Note: Specify SPI BUS 0 or 1 instead of CS pin number.
-// See http://tmrh20.github.io/RF24/RPi.html for more information on usage
-
-//RPi Alternate, with MRAA
-//RF24 radio(15,0);
 
 //RPi Alternate, with SPIDEV - Note: Edit RF24/arch/BBB/spi.cpp and  set 'this->device = "/dev/spidev0.0";;' or as listed in /dev
 RF24 radio(22,0);
 
-
-/****************** Linux (BBB,x86,etc) ***********************/
-
-// See http://tmrh20.github.io/RF24/pages.html for more information on usage
-// See http://iotdk.intel.com/docs/master/mraa/ for more information on MRAA
-// See https://www.kernel.org/doc/Documentation/spi/spidev for more information on SPIDEV
-
-// Setup for ARM(Linux) devices like BBB using spidev (default is "/dev/spidev1.0" )
-//RF24 radio(115,0);
-
-//BBB Alternate, with mraa
-// CE pin = (Header P9, Pin 13) = 59 = 13 + 46 
-//Note: Specify SPI BUS 0 or 1 instead of CS pin number. 
-//RF24 radio(59,0);
-
-/**************************************************************/
 
 // Radio pipe addresses for the 2 nodes to communicate.
 const uint32_t gateway_address 	= {		0xdf569390};
@@ -152,13 +107,14 @@ const uint32_t addresses[] 		= {		0x0a4c9afb,
 										0x5da0cab1,
 										0x77c4d117,
 										0x1fd5a00a};
+const uint8_t address_array_size = 8;
 const uint32_t default_node_address = {	0xac04b1a4};
 
-uint8_t next_expected_node = 0;
+uint8_t timeout_node = 0;
 bool any_node_available = 0;
-uint64_t next_expected_node_millis;
+uint64_t timeout_minimum_millis;
 bool nodes_available[SUPPORTED_NUM_NODES];
-uint64_t node_next_millis[SUPPORTED_NUM_NODES];
+uint64_t timeout_node_millis[SUPPORTED_NUM_NODES];
 uint8_t failures[SUPPORTED_NUM_NODES];
 uint8_t packet[32];
 unsigned long startTime, stopTime, counter, rxTimer=0;
@@ -166,8 +122,8 @@ unsigned long startTime, stopTime, counter, rxTimer=0;
 
 void update_wait_time(void)
 {
-	next_expected_node_millis = millis() + 59990;
-	next_expected_node = 0;
+	timeout_minimum_millis = millis() + MS_WAIT_BETWEEN_PACKETS * 8;
+	timeout_node = 0;
 	any_node_available = 0;
 	for(int i = 0; i < SUPPORTED_NUM_NODES; i++)
 	{
@@ -175,10 +131,10 @@ void update_wait_time(void)
 		{
 			any_node_available = 1;
 
-			if(node_next_millis[i] < next_expected_node_millis)
+			if(timeout_node_millis[i] < timeout_minimum_millis)
 			{
-				next_expected_node = i;
-				next_expected_node_millis = node_next_millis[i];
+				timeout_node = i;
+				timeout_minimum_millis = timeout_node_millis[i];
 			}
 		}
 	}
@@ -209,11 +165,17 @@ void get_node_info(int node)
 	}
 }
 
-void post_node_info(int node)
+bool post_node_info(int node)
 {
 	string temp_string = DATA_WORKING_DIRECTORY;
 	temp_string += "/node";
 	temp_string += to_string(node); 
+	file1 = fopen(temp_string.c_str(), "r");
+	if(file1 == NULL)
+	{
+		return false;
+	}
+	fclose(file1);
 	temp_string += "/info";
 	file1 = fopen(temp_string.c_str(), "wb");
 	fwrite(&temp_packets.node_info, 1, node_info_packet_size, file1);
@@ -225,15 +187,25 @@ void post_node_info(int node)
 	output_file << "bmp280_available: " << ((temp_packets.node_info.bmp280_available == 0) ? "False" : "True") << endl;
 	output_file << "si7020_available: " << ((temp_packets.node_info.si7020_available == 0) ? "False" : "True") << endl;
 	output_file << "hardware_revision: " << temp_packets.node_info.hardware_revision[0] << temp_packets.node_info.hardware_revision[1] << endl;
+	char buffer[20];
+	sprintf(buffer, "%X%X", temp_packets.node_info.unique_id_0, temp_packets.node_info.unique_id_1);
+	output_file << "Unique ID: 0x" << buffer << endl;
+	cout << "Unique ID: 0x" << buffer << endl;
 	output_file.close();
+	return true;
 }
 
-void post_node_data(void)
+bool post_node_data(void)
 {
 	string temp_string = DATA_WORKING_DIRECTORY;
 	temp_string += "/node" ;
 	temp_string += to_string(temp_packets.node_data->node_id); 
-	temp_string += "/data";
+	file1 = fopen(temp_string.c_str(), "r");
+	if (file1 == NULL) {
+        return false;
+    }
+    fclose(file1);  
+	temp_string += "/data.txt"; 
 	ofstream output_file(temp_string.c_str());
 	get_node_info(temp_packets.node_data->node_id);
 	if(temp_packets.node_info.bmp280_available)
@@ -247,6 +219,7 @@ void post_node_data(void)
 		output_file << "Si7020 Humi: " << temp_packets.node_data->Si7020_humid << endl;
 	}
 	output_file.close();
+	return true;
 }
 
 void add_node(int node)
@@ -268,6 +241,15 @@ void remove_node(int node)
 	system(temp_string.c_str());
 }
 
+void remove_all_nodes(void)
+{
+	string temp_string = "rm ";
+	temp_string += DATA_WORKING_DIRECTORY;
+	temp_string += "/node*";
+	temp_string += " -r";
+	system(temp_string.c_str());
+}
+
 int main(int argc, char** argv)
 {
 	// Do some quick initilization of the global variables
@@ -283,6 +265,7 @@ int main(int argc, char** argv)
 
 	// Print preamble:
   	cout << "Starting the gateway thing\n";
+  	remove_all_nodes();
 	radio.begin();                           // Setup and configure rf radio
 	
 	cout << "Started the gateway fine \n";
@@ -308,15 +291,26 @@ int main(int argc, char** argv)
     // forever loop
 	while (1)
 	{
+		if(any_node_available)
+		{
+			if(millis() > timeout_minimum_millis)
+			{
+				remove_node(timeout_node);
+				cout << "Removed node: " << to_string(timeout_node) << endl;
+				nodes_available[timeout_node] = false;
+				update_wait_time();
+			}
+		}
+
 		while(radio.available())
 		{
 			cout << "Message Received: ";
 			radio.read(&packet, 32);
 			for(uint i = 0; i < 32; i++)
 			{
-				cout << (packet[i]);
+				cout << to_string(packet[i]);
 			}
-			cout << ("\n");
+			cout << endl;
 			switch((packet_types) packet[0])
 			{
 				case discover_packet_type:
@@ -379,7 +373,7 @@ int main(int argc, char** argv)
 
 					// Now we need to... send out a provision packet
 					temp_packets.provision.node_id = next_node_id;
-					temp_packets.provision.address = addresses[next_node_id % sizeof(addresses)/sizeof(addresses[0])];
+					temp_packets.provision.address = addresses[next_node_id % address_array_size];
 					temp_packets.provision.mswait = calculateWaitTime(next_node_id);
 					cout << "Node ID: " << to_string(temp_packets.provision.node_id) << endl;
 					cout << "address: " << to_string(temp_packets.provision.address) << endl;
@@ -388,7 +382,7 @@ int main(int argc, char** argv)
 					radio.stopListening();
 					radio.write(&temp_packets.provision, provision_packet_size);
 					radio.startListening();
-					node_next_millis[next_node_id] = temp_packets.provision.mswait;
+					timeout_node_millis[next_node_id] = temp_packets.provision.mswait + 7 * MS_WAIT_BETWEEN_PACKETS + millis();
 
 					tempMillis = millis();
 					while((millis() - tempMillis) < 1000)
@@ -424,15 +418,23 @@ int main(int argc, char** argv)
 				case node_data_packet_type:
 					cout << "Data packet type detected" << endl;
 					uint8_t temp_array[node_data_packet_size];
+					memcpy(temp_array, packet, node_data_packet_size);
 					temp_packets.node_data = (p_node_data_struct_t) temp_array;
-					temp_address = addresses[temp_packets.node_data->node_id % sizeof(addresses)/sizeof(addresses[0])];
-					post_node_data();
-					delay(10);
+					cout << "Node ID: " << to_string(temp_packets.node_data->node_id) << endl;
+					temp_address = addresses[temp_packets.node_data->node_id % address_array_size];
+					if(!post_node_data())
+					{
+						cout << "The node doesn't exist" << endl;
+						break;
+					}
+					delay(25);
 					radio.stopListening();
 					radio.openWritingPipe(temp_address);
 					cout << "Writing address: " << to_string(temp_address) << endl;
 					temp_packets.ack.node_id = temp_packets.node_data->node_id;
 					temp_packets.ack.mswait = calculateWaitTime(temp_packets.ack.node_id);
+					timeout_node_millis[temp_packets.ack.node_id] = temp_packets.ack.mswait + 7 * MS_WAIT_BETWEEN_PACKETS + millis();
+					update_wait_time();
 					radio.write(&temp_packets.ack, gateway_ack_packet_size);
 					radio.openWritingPipe(default_node_address);
 					radio.startListening();
