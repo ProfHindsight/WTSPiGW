@@ -17,7 +17,8 @@
 
 using namespace std;
 
-#define DATA_WORKING_DIRECTORY 	"/home/pi/node_data"
+#define DATA_WORKING_DIRECTORY 	"/home/pi/node_data/normal_nodes"
+#define DATA_MINIMALIST_DIRECTORY "/home/pi/node_data/minimalist_nodes"
 
 #define MS_WAIT_BETWEEN_PACKETS 6000
 #define SUPPORTED_NUM_NODES		64
@@ -27,17 +28,34 @@ using namespace std;
 #define node_info_packet_size   14
 #define node_data_packet_size   18
 #define gateway_ack_packet_size 6
+#define minimalist_packet_size	31
 
 
 enum packet_types
 {
-	null_packet_type = 0,
 	discover_packet_type = 1,
 	provision_packet_type = 2,
 	node_info_packet_type = 3,
 	node_data_packet_type = 4,
-	gateway_ack_packet_type = 5
+	gateway_ack_packet_type = 5,
+	minimalist_packet_type = 6
 };
+
+typedef struct minimalist_packet
+{
+	uint8_t packet_type;
+	uint8_t VBUS_available;
+	uint8_t bmp280_available;
+	uint8_t si7020_available;
+	uint8_t hardware_revision[2];
+	uint32_t unique_id_0;
+	uint32_t unique_id_1;
+	uint32_t BMP280_pres;
+	int32_t BMP280_temp;
+	uint32_t Si7020_humid;
+	int32_t Si7020_temp;
+}minimalist_struct_t, *p_minimalist_struct_t;
+
 
 struct discover_packet
 {
@@ -88,10 +106,10 @@ struct all_packets
 	node_info_packet node_info;
 	p_node_data_struct_t node_data;
 	gateway_ack_packet ack;
+	p_minimalist_struct_t mp;
 };
 
 all_packets temp_packets;
-
 
 //RPi Alternate, with SPIDEV - Note: Edit RF24/arch/BBB/spi.cpp and  set 'this->device = "/dev/spidev0.0";;' or as listed in /dev
 RF24 radio(22,0);
@@ -208,16 +226,10 @@ bool post_node_data(void)
 	temp_string += "/data.txt"; 
 	ofstream output_file(temp_string.c_str());
 	get_node_info(temp_packets.node_data->node_id);
-	if(temp_packets.node_info.bmp280_available)
-	{
-		output_file << "BMP280 Temp: " << temp_packets.node_data->BMP280_temp << endl;
-		output_file << "BMP280 Pres: " << temp_packets.node_data->BMP280_pres << endl;
-	}
-	if(temp_packets.node_info.si7020_available)
-	{
-		output_file << "Si7020 Temp: " << temp_packets.node_data->Si7020_temp << endl;
-		output_file << "Si7020 Humi: " << temp_packets.node_data->Si7020_humid << endl;
-	}
+	output_file << "BMP280 Temp: " << temp_packets.node_data->BMP280_temp << endl;
+	output_file << "BMP280 Pres: " << temp_packets.node_data->BMP280_pres << endl;
+	output_file << "Si7020 Temp: " << temp_packets.node_data->Si7020_temp << endl;
+	output_file << "Si7020 Humi: " << temp_packets.node_data->Si7020_humid << endl;
 	output_file.close();
 	return true;
 }
@@ -250,6 +262,59 @@ void remove_all_nodes(void)
 	system(temp_string.c_str());
 }
 
+void add_directories(void)
+{
+	string temp_string = "mkdir ";
+	temp_string += DATA_WORKING_DIRECTORY;
+	temp_string += " ";
+	temp_string += DATA_MINIMALIST_DIRECTORY;
+	system(temp_string.c_str());
+}
+
+
+bool post_minimalist_node(minimalist_packet* mpt)
+{
+	string temp_string = DATA_MINIMALIST_DIRECTORY;
+	temp_string += "/node";
+	char buffer[20];
+	sprintf(buffer, "%X%X", mpt->unique_id_0, mpt->unique_id_1);
+	temp_string += buffer;
+
+	file1 = fopen(temp_string.c_str(), "r");
+	if (file1 == NULL) {
+    	string temp_string = "mkdir ";
+		temp_string += DATA_MINIMALIST_DIRECTORY;
+		temp_string += "/node";
+		temp_string += buffer;
+		system(temp_string.c_str());
+		cout << "Making directory" << endl;
+
+		temp_string = DATA_MINIMALIST_DIRECTORY;
+		temp_string += "/node";
+		temp_string += buffer;
+		file1 = fopen(temp_string.c_str(), "r");
+		if(file1 == NULL)
+		{
+			return false;
+		}
+		cout << "Minimalist Directory Created: " << buffer << endl;
+    }
+    fclose(file1);  
+	temp_string += "/data.txt"; 
+	ofstream output_file(temp_string.c_str());
+	output_file << "VBUS_available: " << ((mpt->VBUS_available == 0) ? "False" : "True") << endl;
+	output_file << "bmp280_available: " << ((mpt->bmp280_available == 0) ? "False" : "True") << endl;
+	output_file << "si7020_available: " << ((mpt->si7020_available == 0) ? "False" : "True") << endl;
+	output_file << "hardware_revision: " << mpt->hardware_revision[0] << mpt->hardware_revision[1] << endl;
+	output_file << "BMP280 Temp: " << mpt->BMP280_temp << endl;
+	output_file << "BMP280 Pres: " << mpt->BMP280_pres << endl;
+	output_file << "Si7020 Temp: " << mpt->Si7020_temp << endl;
+	output_file << "Si7020 Humi: " << mpt->Si7020_humid << endl;
+	output_file.close();
+	return true;
+
+}
+
 int main(int argc, char** argv)
 {
 	// Do some quick initilization of the global variables
@@ -265,6 +330,7 @@ int main(int argc, char** argv)
 
 	// Print preamble:
   	cout << "Starting the gateway thing\n";
+  	add_directories();
   	remove_all_nodes();
 	radio.begin();                           // Setup and configure rf radio
 	
@@ -417,9 +483,9 @@ int main(int argc, char** argv)
 				// Allow them to reset by ignoring them.
 				case node_data_packet_type:
 					cout << "Data packet type detected" << endl;
-					uint8_t temp_array[node_data_packet_size];
-					memcpy(temp_array, packet, node_data_packet_size);
-					temp_packets.node_data = (p_node_data_struct_t) temp_array;
+					uint8_t mp_temp_array[node_data_packet_size];
+					memcpy(mp_temp_array, packet, node_data_packet_size);
+					temp_packets.node_data = (p_node_data_struct_t) mp_temp_array;
 					cout << "Node ID: " << to_string(temp_packets.node_data->node_id) << endl;
 					temp_address = addresses[temp_packets.node_data->node_id % address_array_size];
 					if(!post_node_data())
@@ -439,6 +505,21 @@ int main(int argc, char** argv)
 					radio.openWritingPipe(default_node_address);
 					radio.startListening();
 					cout << "I think I posted the data" << endl;
+				break;
+
+				case minimalist_packet_type:
+					cout << "Minimalist packet type detected" << endl;
+					uint8_t temp_array[minimalist_packet_size];
+					memcpy(temp_array, packet, minimalist_packet_size);
+					temp_packets.mp = (p_minimalist_struct_t) temp_array;
+					if(post_minimalist_node(temp_packets.mp) == true)
+					{
+						cout << "Posted Data" << endl;
+					}
+					else
+					{
+						cout << "Failed to post minimalist data" << endl;
+					}
 				break;
 				case node_info_packet_type:
 					cout << "Info packet type detected" << endl;
