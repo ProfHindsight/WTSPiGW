@@ -162,6 +162,7 @@ uint32_t calculateWaitTime(int node_id)
 {
 	uint32_t timeslice = (MS_WAIT_BETWEEN_PACKETS) * node_id / SUPPORTED_NUM_NODES;
 	int64_t wait_time =  MS_WAIT_BETWEEN_PACKETS + timeslice - (millis() % MS_WAIT_BETWEEN_PACKETS);
+	if(wait_time < (MS_WAIT_BETWEEN_PACKETS/2)) wait_time += MS_WAIT_BETWEEN_PACKETS;
 	cout << "Wait time: " << wait_time << endl;
 	return wait_time;
 }
@@ -493,7 +494,7 @@ int main(int argc, char** argv)
 						cout << "The node doesn't exist" << endl;
 						break;
 					}
-					delay(25);
+					delay(5);
 					radio.stopListening();
 					radio.openWritingPipe(temp_address);
 					cout << "Writing address: " << to_string(temp_address) << endl;
